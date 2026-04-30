@@ -7,66 +7,62 @@ from typing import Optional
 import edge_tts
 from gtts import gTTS
 
-from config import SARVAM_API_KEY, AUDIO_DIR, VOICE_PRIORITY
+from config import *
 
 logger = logging.getLogger(__name__)
 
 
-class VoiceManager:
-    """Manages multiple free TTS services with fallback"""
+class VoiceHandler:
+    """Handles multiple TTS services with fallback"""
     
     def __init__(self):
         self.sarvam_key = SARVAM_API_KEY
-        self.voice_stats = {
+        self.stats = {
             'sarvam': {'success': 0, 'failures': 0},
             'edge-tts': {'success': 0, 'failures': 0},
             'gtts': {'success': 0, 'failures': 0},
         }
+        logger.info("VoiceHandler initialized")
     
     async def generate_voice(self, text: str, language: str = 'en') -> Optional[str]:
-        """Generate voice using available services"""
+        """Generate voice with fallback"""
         
-        # Limit text length for voice
+        # Limit text
         if len(text) > 500:
-            text = text[:500] + "..."
+            text = text[:497] + "..."
         
         for service in VOICE_PRIORITY:
             try:
-                if service == 'sarvam' and self.sarvam_key and language in ['en', 'hi']:
+                if service == 'sarvam' and self.sarvam_key:
                     filepath = await self._try_sarvam(text, language)
                     if filepath:
-                        self.voice_stats['sarvam']['success'] += 1
-                        logger.info(f"✅ Voice from Sarvam")
+                        self.stats['sarvam']['success'] += 1
                         return filepath
                 
                 elif service == 'edge-tts':
                     filepath = await self._try_edge_tts(text, language)
                     if filepath:
-                        self.voice_stats['edge-tts']['success'] += 1
-                        logger.info(f"✅ Voice from Edge TTS")
+                        self.stats['edge-tts']['success'] += 1
                         return filepath
                 
                 elif service == 'gtts':
                     filepath = await self._try_gtts(text, language)
                     if filepath:
-                        self.voice_stats['gtts']['success'] += 1
-                        logger.info(f"✅ Voice from Google TTS")
+                        self.stats['gtts']['success'] += 1
                         return filepath
-            
+                        
             except Exception as e:
-                logger.warning(f"❌ {service} failed: {e}")
-                self.voice_stats[service]['failures'] += 1
+                logger.warning(f"{service} failed: {e}")
+                self.stats[service]['failures'] += 1
                 continue
         
-        logger.error("All voice services failed")
         return None
     
     async def _try_sarvam(self, text: str, language: str) -> Optional[str]:
-        """Try Sarvam AI (Indian voices, very natural)"""
+        """Try Sarvam AI"""
         try:
             filename = f"{AUDIO_DIR}/voice_{uuid.uuid4()}.mp3"
             
-            # Map language codes
             lang_map = {'en': 'en-IN', 'hi': 'hi-IN'}
             target_lang = lang_map.get(language, 'en-IN')
             
@@ -81,39 +77,28 @@ class VoiceManager:
                         "inputs": [text],
                         "target_language_code": target_lang,
                         "speaker": "meera",
-                        "pitch": 0,
-                        "pace": 1.0,
-                        "loudness": 1.5,
-                        "speech_sample_rate": 22050,
-                        "enable_preprocessing": True,
                         "model": "bulbul:v1"
                     },
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        audio_base64 = data['audios'][0]
                         
-                        # Decode and save
                         import base64
-                        audio_bytes = base64.b64decode(audio_base64)
+                        audio_bytes = base64.b64decode(data['audios'][0])
                         with open(filename, 'wb') as f:
                             f.write(audio_bytes)
                         
                         return filename
-                    else:
-                        raise Exception(f"HTTP {resp.status}")
-        
         except Exception as e:
-            logger.error(f"Sarvam TTS failed: {e}")
+            logger.error(f"Sarvam failed: {e}")
             return None
     
     async def _try_edge_tts(self, text: str, language: str) -> Optional[str]:
-        """Try Edge TTS (Microsoft, very high quality, FREE!)"""
+        """Try Edge TTS"""
         try:
             filename = f"{AUDIO_DIR}/voice_{uuid.uuid4()}.mp3"
             
-            # Voice selection based on language
             voice_map = {
                 'en': 'en-US-AriaNeural',
                 'hi': 'hi-IN-SwaraNeural',
@@ -121,42 +106,37 @@ class VoiceManager:
                 'fr': 'fr-FR-DeniseNeural',
                 'de': 'de-DE-KatjaNeural',
                 'it': 'it-IT-ElsaNeural',
-                'ja': 'ja-JP-NanamiNeural',
-                'ko': 'ko-KR-SunHiNeural',
-                'zh': 'zh-CN-XiaoxiaoNeural',
             }
             
             voice = voice_map.get(language, 'en-US-AriaNeural')
             
-            # Generate audio
             communicate = edge_tts.Communicate(text, voice)
             await communicate.save(filename)
             
             return filename
-        
+            
         except Exception as e:
             logger.error(f"Edge TTS failed: {e}")
             return None
     
     async def _try_gtts(self, text: str, language: str) -> Optional[str]:
-        """Try Google TTS (Basic but reliable)"""
+        """Try Google TTS"""
         try:
             filename = f"{AUDIO_DIR}/voice_{uuid.uuid4()}.mp3"
             
-            # Run in thread to avoid blocking
             await asyncio.to_thread(self._gtts_sync, text, language, filename)
             
             return filename
-        
+            
         except Exception as e:
             logger.error(f"GTTS failed: {e}")
             return None
     
     def _gtts_sync(self, text: str, language: str, filename: str):
-        """Synchronous GTTS generation"""
+        """Sync GTTS"""
         tts = gTTS(text=text, lang=language, slow=False)
         tts.save(filename)
     
     def get_stats(self) -> dict:
-        """Get voice service statistics"""
-        return self.voice_stats
+        """Get statistics"""
+        return self.stats
