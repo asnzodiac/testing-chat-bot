@@ -26,31 +26,39 @@ class VoiceManager:
     async def generate_voice(self, text: str, language: str = 'en') -> Optional[str]:
         """Generate voice using available services"""
         
+        # Limit text length for voice
+        if len(text) > 500:
+            text = text[:500] + "..."
+        
         for service in VOICE_PRIORITY:
             try:
                 if service == 'sarvam' and self.sarvam_key and language in ['en', 'hi']:
                     filepath = await self._try_sarvam(text, language)
                     if filepath:
                         self.voice_stats['sarvam']['success'] += 1
+                        logger.info(f"✅ Voice from Sarvam")
                         return filepath
                 
                 elif service == 'edge-tts':
                     filepath = await self._try_edge_tts(text, language)
                     if filepath:
                         self.voice_stats['edge-tts']['success'] += 1
+                        logger.info(f"✅ Voice from Edge TTS")
                         return filepath
                 
                 elif service == 'gtts':
                     filepath = await self._try_gtts(text, language)
                     if filepath:
                         self.voice_stats['gtts']['success'] += 1
+                        logger.info(f"✅ Voice from Google TTS")
                         return filepath
             
             except Exception as e:
-                logger.warning(f"{service} failed: {e}")
+                logger.warning(f"❌ {service} failed: {e}")
                 self.voice_stats[service]['failures'] += 1
                 continue
         
+        logger.error("All voice services failed")
         return None
     
     async def _try_sarvam(self, text: str, language: str) -> Optional[str]:
@@ -72,14 +80,15 @@ class VoiceManager:
                     json={
                         "inputs": [text],
                         "target_language_code": target_lang,
-                        "speaker": "meera",  # Female voice, also: "arvind" (male)
+                        "speaker": "meera",
                         "pitch": 0,
                         "pace": 1.0,
                         "loudness": 1.5,
                         "speech_sample_rate": 22050,
                         "enable_preprocessing": True,
                         "model": "bulbul:v1"
-                    }
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -92,7 +101,9 @@ class VoiceManager:
                             f.write(audio_bytes)
                         
                         return filename
-            
+                    else:
+                        raise Exception(f"HTTP {resp.status}")
+        
         except Exception as e:
             logger.error(f"Sarvam TTS failed: {e}")
             return None
@@ -104,12 +115,15 @@ class VoiceManager:
             
             # Voice selection based on language
             voice_map = {
-                'en': 'en-US-AriaNeural',      # Female, very natural
-                'hi': 'hi-IN-SwaraNeural',     # Hindi female
-                'es': 'es-ES-ElviraNeural',    # Spanish
-                'fr': 'fr-FR-DeniseNeural',    # French
-                'de': 'de-DE-KatjaNeural',     # German
-                'it': 'it-IT-ElsaNeural',      # Italian
+                'en': 'en-US-AriaNeural',
+                'hi': 'hi-IN-SwaraNeural',
+                'es': 'es-ES-ElviraNeural',
+                'fr': 'fr-FR-DeniseNeural',
+                'de': 'de-DE-KatjaNeural',
+                'it': 'it-IT-ElsaNeural',
+                'ja': 'ja-JP-NanamiNeural',
+                'ko': 'ko-KR-SunHiNeural',
+                'zh': 'zh-CN-XiaoxiaoNeural',
             }
             
             voice = voice_map.get(language, 'en-US-AriaNeural')
