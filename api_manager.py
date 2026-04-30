@@ -32,7 +32,8 @@ class APIManager:
         for key in GEMINI_KEYS:
             try:
                 genai.configure(api_key=key)
-                self.gemini_models.append(genai.GenerativeModel('gemini-pro'))
+                # Updated to current model
+                self.gemini_models.append(genai.GenerativeModel('gemini-1.5-flash'))
             except Exception as e:
                 logger.warning(f"Failed to initialize Gemini model: {e}")
         self.gemini_index = 0
@@ -56,6 +57,15 @@ class APIManager:
             'openrouter': {'success': 0, 'failures': 0},
             'openai': {'success': 0, 'failures': 0},
         }
+        
+        # Available GROQ models (current as of 2024)
+        self.groq_models = [
+            "llama-3.3-70b-versatile",      # Latest Llama 3.3 (Best)
+            "llama-3.1-8b-instant",         # Fast Llama 3.1
+            "mixtral-8x7b-32768",           # Mixtral (Good fallback)
+            "gemma2-9b-it",                 # Gemma 2
+        ]
+        self.groq_model_index = 0
     
     async def generate_response(self, messages: List[Dict], max_tokens: int = 1000) -> str:
         """Try APIs in priority order until one succeeds"""
@@ -98,25 +108,34 @@ class APIManager:
         raise Exception("❌ All AI services failed. Please try again later.")
     
     async def _try_groq(self, messages: List[Dict], max_tokens: int) -> Optional[str]:
-        """Try GROQ API with key rotation"""
-        for attempt in range(len(self.groq_clients)):
-            try:
-                client = self.groq_clients[self.groq_index]
-                
-                response = await client.chat.completions.create(
-                    model="llama-3.1-70b-versatile",  # Best free model
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=0.7,
-                )
-                
-                return response.choices[0].message.content
+        """Try GROQ API with key rotation and model fallback"""
+        
+        for key_attempt in range(len(self.groq_clients)):
+            client = self.groq_clients[self.groq_index]
             
-            except Exception as e:
-                logger.warning(f"GROQ key {self.groq_index} failed: {e}")
-                self.groq_index = (self.groq_index + 1) % len(self.groq_clients)
-                if attempt == len(self.groq_clients) - 1:
-                    raise
+            # Try different models
+            for model_attempt in range(len(self.groq_models)):
+                try:
+                    model = self.groq_models[self.groq_model_index]
+                    
+                    logger.info(f"Trying GROQ with model: {model}")
+                    
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=0.7,
+                    )
+                    
+                    return response.choices[0].message.content
+                
+                except Exception as e:
+                    logger.warning(f"GROQ model {model} failed: {e}")
+                    # Try next model
+                    self.groq_model_index = (self.groq_model_index + 1) % len(self.groq_models)
+            
+            # Try next API key
+            self.groq_index = (self.groq_index + 1) % len(self.groq_clients)
         
         return None
     
@@ -129,10 +148,16 @@ class APIManager:
                 # Convert messages to Gemini format
                 prompt = self._messages_to_prompt(messages)
                 
+                logger.info(f"Trying Gemini Flash 1.5")
+                
                 # Use asyncio.to_thread for synchronous Gemini API
                 response = await asyncio.to_thread(
                     model.generate_content,
-                    prompt
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        max_output_tokens=1000,
+                        temperature=0.7,
+                    )
                 )
                 
                 return response.text
@@ -140,45 +165,57 @@ class APIManager:
             except Exception as e:
                 logger.warning(f"Gemini key {self.gemini_index} failed: {e}")
                 self.gemini_index = (self.gemini_index + 1) % len(self.gemini_models)
-                if attempt == len(self.gemini_models) - 1:
-                    raise
         
         return None
     
     async def _try_openrouter(self, messages: List[Dict], max_tokens: int) -> Optional[str]:
-        """Try OpenRouter API with key rotation"""
+        """Try OpenRouter API with multiple free models"""
+        
+        # Updated free models available on OpenRouter
+        free_models = [
+            "google/gemini-flash-1.5",              # Google's free model
+            "meta-llama/llama-3.2-3b-instruct:free", # Llama 3.2 free
+            "qwen/qwen-2-7b-instruct:free",          # Qwen 2 free
+            "microsoft/phi-3-mini-128k-instruct:free", # Phi-3 free
+        ]
+        
         for attempt in range(len(self.openrouter_keys)):
-            try:
-                key = self.openrouter_keys[self.openrouter_index]
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {key}",
-                            "Content-Type": "application/json",
-                            "HTTP-Referer": "https://github.com/asnzodiac/adima_bot",
-                            "X-Title": "Adima Bot"
-                        },
-                        json={
-                            "model": "meta-llama/llama-3.1-8b-instruct:free",
-                            "messages": messages,
-                            "max_tokens": max_tokens,
-                        },
-                        timeout=aiohttp.ClientTimeout(total=30)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            return data['choices'][0]['message']['content']
-                        else:
-                            error_text = await resp.text()
-                            raise Exception(f"HTTP {resp.status}: {error_text}")
+            key = self.openrouter_keys[self.openrouter_index]
             
-            except Exception as e:
-                logger.warning(f"OpenRouter key {self.openrouter_index} failed: {e}")
-                self.openrouter_index = (self.openrouter_index + 1) % len(self.openrouter_keys)
-                if attempt == len(self.openrouter_keys) - 1:
-                    raise
+            # Try each free model
+            for model in free_models:
+                try:
+                    logger.info(f"Trying OpenRouter with model: {model}")
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {key}",
+                                "Content-Type": "application/json",
+                                "HTTP-Referer": "https://github.com/asnzodiac/adima_bot",
+                                "X-Title": "Adima Bot"
+                            },
+                            json={
+                                "model": model,
+                                "messages": messages,
+                                "max_tokens": max_tokens,
+                            },
+                            timeout=aiohttp.ClientTimeout(total=30)
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                return data['choices'][0]['message']['content']
+                            else:
+                                error_text = await resp.text()
+                                logger.warning(f"OpenRouter {model} failed: {error_text}")
+                
+                except Exception as e:
+                    logger.warning(f"OpenRouter {model} error: {e}")
+                    continue
+            
+            # Try next API key
+            self.openrouter_index = (self.openrouter_index + 1) % len(self.openrouter_keys)
         
         return None
     
