@@ -1,0 +1,9 @@
+adima_bot/
+├── main.py
+├── config.py
+├── api_manager.py          # NEW: Multi-API fallback handler
+├── voice_manager.py        # NEW: Free TTS services
+├── requirements.txt
+├── .env
+├── .gitignore
+└── README.md
